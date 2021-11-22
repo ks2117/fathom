@@ -1,5 +1,6 @@
 import flask
-
+import os
+import json
 
 class RiotApiHandler:
 
@@ -13,8 +14,10 @@ class RiotApiHandler:
             api_key (str): riot developer api key
         """
         if api_key is None:
-            #TODO read api key from apikey.txt
-            pass
+            dirname = os.path.dirname(__file__)
+            filename = os.path.join(dirname, 'riot-api-key.txt')
+            with open(filename) as f:
+                self.api_key = f.read()
         else:
             self.api_key = api_key
             self.routing_region = routing_region
@@ -135,6 +138,21 @@ class RiotApiHandler:
         pass
 
     def get_master_league(self, queue, region):
+        pass
+
+    def get_ranked_players(self, queue):
+        dirname = os.path.dirname(__file__)
+        filename = os.path.join(dirname, '/constants/servers.json')
+        with open(filename) as f:
+            data = json.load(f)
+            servers = [d['server'] for d in data]
+        for s in servers:
+            self.get_challenger_league()
+            self.get_grandmaster_league()
+            self.get_master_league()
+            for t in tiers:
+                for d in divisions:
+                    self.get_league_entries(queue, t, d, s)
         pass
 
     def get_platform_status(self, region):
