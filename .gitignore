@@ -1,3 +1,4 @@
 __pycache__/
 *.swp
-bobvenv/
+fathom-venv/
+.idea/
