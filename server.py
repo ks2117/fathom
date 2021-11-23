@@ -1,10 +1,22 @@
 import flask
 import os
 import json
+import csv
+import pandas as pd
+import requests
+
+dirname = os.path.dirname(__file__)
+
+class PlayerDatabase:
+
+    def __init__(self):
+        self.columns = ["puuid", "summonerId", "summonerName", "region", "tier", "division", "leaguePoints"]
+        self.data = pd.DataFrame(columns=self.columns)
+
 
 class RiotApiHandler:
 
-    def __init__(self, routing_region, api_key=None):
+    def __init__(self, routing_region=None, api_key=None):
         """
         Initialises the riot api handler for a particular api key
 
@@ -13,13 +25,34 @@ class RiotApiHandler:
             routing_region (RoutingRegion): default cluster to execute the commands against
             api_key (str): riot developer api key
         """
+        self.api_key_header = "X-Riot-Token"
         if api_key is None:
-            dirname = os.path.dirname(__file__)
             filename = os.path.join(dirname, 'riot-api-key.txt')
             with open(filename) as f:
                 self.api_key = f.read()
         else:
             self.api_key = api_key
+
+        servers_filename = os.path.join(dirname, 'constants/servers.json')
+        tiers_filename = os.path.join(dirname, 'constants/tiers.csv')
+        divisions_filename = os.path.join(dirname, 'constants/divisions.csv')
+        leagues_filename = os.path.join(dirname, 'constants/leagues.csv')
+        regions_filename = os.path.join(dirname, 'constants/regions.csv')
+        with open(servers_filename) as f:
+            data = json.load(f)
+            self.servers = [d['server'] for d in data]
+        with open(tiers_filename) as f:
+            self.tiers = f.read().split(",")
+        with open(divisions_filename) as f:
+            self.divisions = f.read().split(",")
+        with open(leagues_filename) as f:
+            self.leagues = f.read().split(",")
+        with open(regions_filename) as f:
+            self.regions = {r: r for r in f.read().split(",")}
+
+        if routing_region is None:
+            self.routing_region = self.regions['EUROPE']
+        else:
             self.routing_region = routing_region
 
     def get_account(self, puuid):
@@ -123,7 +156,9 @@ class RiotApiHandler:
         pass
 
     def get_challenger_league(self, queue, region):
-        pass
+        url = "https://" + region + ".api.riotgames.com/lol/league/v4/challengerleagues/by-queue/" + queue
+        r = requests.get(url=url, headers={self.api_key_header: self.api_key})
+        return r
 
     def get_leagues_by_summoner(self, encryptedSummonerId, region):
         pass
@@ -140,19 +175,20 @@ class RiotApiHandler:
     def get_master_league(self, queue, region):
         pass
 
-    def get_ranked_players(self, queue):
-        dirname = os.path.dirname(__file__)
-        filename = os.path.join(dirname, '/constants/servers.json')
-        with open(filename) as f:
-            data = json.load(f)
-            servers = [d['server'] for d in data]
-        for s in servers:
-            self.get_challenger_league()
-            self.get_grandmaster_league()
-            self.get_master_league()
-            for t in tiers:
-                for d in divisions:
-                    self.get_league_entries(queue, t, d, s)
+    def get_ranked_players(self):
+
+        playerbase = pd.DataFrame()
+        for q in self.leagues:
+            for s in self.servers:
+                self.get_challenger_league(q, s)
+                # TODO: debug only
+                break
+                self.get_grandmaster_league(q, s)
+                self.get_master_league(q, s)
+                for t in self.tiers:
+                    for d in self.divisions:
+                        self.get_league_entries(q, t, d, s)
+
         pass
 
     def get_platform_status(self, region):
