@@ -9,20 +9,32 @@ dirname = os.path.dirname(__file__)
 
 class PlayerDatabase:
 
-    def __init__(self):
-        self.columns = ["puuid", "summonerId", "summonerName", "region", "tier", "division", "leaguePoints"]
+    def __init__(self, riotApiHandler=None):
+        self.columns = ["region", "tier", "puuid", "rank", "summonerId", "summonerName", "leaguePoints"]
         self.data = pd.DataFrame(columns=self.columns)
+        if riotApiHandler is None:
+            self.riotApiHandler = RiotApiHandler()
+        else:
+            self.riotApiHandler = riotApiHandler
+
+    def add(self, league, region):
+        data = pd.DataFrame([[""] + [""] + [p[c] for c in self.columns[3:]] for p in league], columns=self.columns)
+        for i, p in enumerate(league.entries):
+            data.iloc[i].puuid = self.riotApiHandler.get_summoner_by_summoner(p.summonerName)
+            data.iloc[i].region = region
+            data.iloc[i].tier = league.tier
+        self.data.append(data)
 
 
 class RiotApiHandler:
 
-    def __init__(self, routing_region=None, api_key=None):
+    def __init__(self, default_routing_region=None, api_key=None, limits="development", limits_margin=0.05):
         """
         Initialises the riot api handler for a particular api key
 
 
         Parameters: 
-            routing_region (RoutingRegion): default cluster to execute the commands against
+            default_routing_region (RoutingRegion): default cluster to execute the commands against
             api_key (str): riot developer api key
         """
         self.api_key_header = "X-Riot-Token"
@@ -50,10 +62,28 @@ class RiotApiHandler:
         with open(regions_filename) as f:
             self.regions = {r: r for r in f.read().split(",")}
 
-        if routing_region is None:
-            self.routing_region = self.regions['EUROPE']
+        if default_routing_region is None:
+            self.default_routing_region = self.regions['EUROPE']
         else:
-            self.routing_region = routing_region
+            self.default_routing_region = default_routing_region
+
+        if limits == "development":
+            # Development limits are 20 requests/1000ms (1 second) and 100 requests/120000ms (2 minutes)
+            self.limits = {1000: 20, 120000: 100}
+        elif limits == "production":
+            # Production limits are 500 requests/10000ms (10 seconds) and 30000 requests/600000ms (10 minutes)
+            self.limits = {10000: 500, 600000: 30000}
+        else:
+            self.limits = limits
+
+        self.limits_margin = limits_margin
+
+    def apply_limiter(self, route, request):
+        if True:
+            resp = request.send()
+        else:
+            wait(0)
+        pass
 
     def get_account(self, puuid):
         """
@@ -157,8 +187,9 @@ class RiotApiHandler:
 
     def get_challenger_league(self, queue, region):
         url = "https://" + region + ".api.riotgames.com/lol/league/v4/challengerleagues/by-queue/" + queue
-        r = requests.get(url=url, headers={self.api_key_header: self.api_key})
-        return r
+        req = requests.Request('GET', url, headers={self.api_key_header: self.api_key})
+        self.apply_limiter(region, req)
+        return req
 
     def get_leagues_by_summoner(self, encryptedSummonerId, region):
         pass
