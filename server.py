@@ -6,31 +6,55 @@ import pandas as pd
 import requests
 import time
 from collections import deque
+import re
 
 dirname = os.path.dirname(__file__)
 
 class PlayerDatabase:
 
     def __init__(self, riotApiHandler=None):
-        self.columns = ["region", "tier", "puuid", "rank", "summonerId", "summonerName", "leaguePoints"]
-        self.data = pd.DataFrame(columns=self.columns)
         if riotApiHandler is None:
             self.riotApiHandler = RiotApiHandler()
         else:
             self.riotApiHandler = riotApiHandler
+        self.columns = ["region", "puuid", "summonerId", "summonerName", "gameName", "tagLine"]
+        for q in self.riotApiHandler.leagues:
+            self.columns = self.columns + [q + "_tier", q + "_rank", q + "_leaguePoints", q + "_history"]
+        self.data = pd.DataFrame(columns=self.columns)
 
-    def add(self, league, region):
-        data = pd.DataFrame([[""] + [""] + [p[c] for c in self.columns[3:]] for p in league], columns=self.columns)
-        for i, p in enumerate(league.entries):
-            data.iloc[i].puuid = self.riotApiHandler.get_summoner_by_summoner(p.summonerName)
-            data.iloc[i].region = region
-            data.iloc[i].tier = league.tier
-        self.data.append(data)
+    def add(self, league, region, queue):
+        for i, p in enumerate(league["entries"]):
+            puuid = self.riotApiHandler.get_summoner_by_summoner(p["summonerName"], region=region).puuid
+            if self.data["puuid"].isin(puuid):
+                self.data.loc[self.data["puuid"] == puuid]
+                pass
+            else:
+                pass
 
+
+class LimitTracker:
+
+    def __init__(self, limits, timestamps=deque(), limits_margin=0.05):
+        self.limits = [{"limit_period": l["limit_period"], "limit": l["limit"], "timestamps": timestamps} for l in limits]
+        self.limits_margin = limits_margin
+
+    def get_wait_time(self):
+        wait_time = 0
+        for l in self.limits:
+            while len(l["timestamps"]) > 0 and l["timestamps"][0] < time.time() - l["limit_period"]:
+                l["timestamps"].popleft()
+            limit = l["limit"] * (1 - self.limits_margin) - 1
+            if limit <= len(l["timestamps"]):
+                wait_time = max(wait_time, l["limit_period"] - (time.time() - l["timestamps"][-limit]))
+        return wait_time
+
+    def add(self, timestamp):
+        for l in self.limits:
+            l["timestamps"].append(timestamp)
 
 class RiotApiHandler:
 
-    def __init__(self, default_routing_region=None, api_key=None, api_key_limits="development", limits_margin=0.05):
+    def __init__(self, app_name="fathom", default_routing_region=None, api_key=None, api_key_limits="development", limits_margin=0.05):
         """
         Initialises the riot api handler for a particular api key
 
@@ -39,6 +63,7 @@ class RiotApiHandler:
             default_routing_region (RoutingRegion): default cluster to execute the commands against
             api_key (str): riot developer api key
         """
+        self.app_name = app_name
         self.api_key_header = "X-Riot-Token"
         if api_key is None:
             filename = os.path.join(dirname, 'riot-api-key.txt')
@@ -69,6 +94,7 @@ class RiotApiHandler:
         else:
             self.default_routing_region = default_routing_region
 
+            #TODO: I dont like that change of types
         if api_key_limits == "development":
             # Development limits are 20 requests/1s and 100 requests/120s (2 minutes)
             self.api_key_limits = {1: 20, 12000: 100}
@@ -80,8 +106,9 @@ class RiotApiHandler:
 
         self.limits = {}
         self.limits_margin = limits_margin
+        self.session = requests.Session()
 
-    def apply_limiter(self, request, route=None, app=None, method=None, service=None):
+    def apply_limiter(self, request, route=None, app=None, method=None):
         got_response = False
         while not got_response:
             ready = False
@@ -90,65 +117,43 @@ class RiotApiHandler:
                 wait_time = 0
                 if route is not None:
                     if route in self.limits:
-                        while len(self.limits[route].timestamps) > 0 and\
-                                self.limits[route].timestamps[0] < time.time() - self.limits[route].limit_period:
-                            self.limits[route].timestamps.popleft()
-                        limit = self.limits[route].limit * (1 - self.limits_margin) - 1
-                        if limit <= len(self.limits[route].timestamps):
-                            ready = False
-                            timestamp = self.limits[route].timestamps[-limit]
-                            wait_time = max(wait_time, self.limits[route].limit_period - (time.time() - timestamp))
+                        wait_time = max(self.limits[route].get_wait_time(), wait_time)
                     else:
-                        self.limits[route] = {"limit": -1, "limit_period": -1, "timestamps": deque()}
+                        self.limits[route] = None
                 if app is not None:
                     if app in self.limits:
-                        while len(self.limits[app].timestamps) > 0 and\
-                                self.limits[app].timestamps[0] < time.time() - self.limits[app].limit_period:
-                            self.limits[app].timestamps.popleft()
-                        limit = self.limits[app].limit * (1 - self.limits_margin) - 1
-                        if limit <= len(self.limits[app].timestamps):
-                            ready = False
-                            timestamp = self.limits[app].timestamps[-limit]
-                            wait_time = max(wait_time, self.limits[app].limit_period - (time.time() - timestamp))
+                        wait_time = max(self.limits[app].get_wait_time(), wait_time)
                     else:
-                        self.limits[app] = {"limit": -1, "limit_period": -1, "timestamps": deque()}
+                        self.limits[app] = None
                 if method is not None:
                     if method in self.limits:
-                        while len(self.limits[method].timestamps) > 0 and\
-                                self.limits[method].timestamps[0] < time.time() - self.limits[method].limit_period:
-                            self.limits[method].timestamps.popleft()
-                        limit = self.limits[method].limit * (1 - self.limits_margin) - 1
-                        if limit <= len(self.limits[method].timestamps):
-                            ready = False
-                            timestamp = self.limits[method].timestamps[-limit]
-                            wait_time = max(wait_time, self.limits[method].limit_period - (time.time() - timestamp))
+                        wait_time = max(self.limits[method].get_wait_time(), wait_time)
                     else:
-                        self.limits[method] = {"limit": -1, "limit_period": -1, "timestamps": deque()}
-                if service is not None:
-                    if service in self.limits:
-                        while len(self.limits[service].timestamps) > 0 and\
-                                self.limits[service].timestamps[0] < time.time() - self.limits[service].limit_period:
-                            self.limits[service].timestamps.popleft()
-                        limit = self.limits[service].limit * (1 - self.limits_margin) - 1
-                        if limit <= len(self.limits[service].timestamps):
-                            ready = False
-                            timestamp = self.limits[service].timestamps[-limit]
-                            wait_time = max(wait_time, self.limits[service].limit_period - (time.time() - timestamp))
-                    else:
-                        self.limits[service] = {"limit": -1, "limit_period": -1, "timestamps": deque()}
+                        self.limits[method] = None
                 time.sleep(wait_time)
 
+            resp = self.session.send(request)
             timestamp = time.time()
-            resp = request.send()
             got_response = True
-            if self.limits[route].limit == -1:
-                pass
-            if self.limits[app].limit == -1:
-                pass
-            if self.limits[method].limit == -1:
-                pass
-            if self.limits[service].limit == -1:
-                pass
+            app_limits = re.split(",:", resp.headers["X-App-Rate-Limit"])
+            method_limits = re.split(",:", resp.headers["X-Method-Rate-Limit"])
+            if self.limits[route] is None:
+                self.limits[route] = \
+                    LimitTracker([{"limit_period": l, "limit": self.api_key_limits[l], "timestamps": deque([timestamp])}
+                                  for l in self.api_key_limits.keys()])
+            if self.limits[app] is None:
+                self.limits[app] = \
+                    LimitTracker([{"limit_period": app_limits[2 * i + 1], "limit": app_limits[2 * i], "timestamps": deque([timestamp])}
+                                  for i in range(len(app_limits) // 2)])
+            if self.limits[method] is None:
+                self.limits[method] = \
+                    LimitTracker([{"limit_period": method_limits[2 * i + 1], "limit": method_limits[2 * i], "timestamps": deque([timestamp])}
+                                  for i in range(len(method_limits) // 2)])
+
+            self.limits[route].add(timestamp)
+            self.limits[app].add(timestamp)
+            self.limits[method].add(timestamp)
+            #TODO: wait for resp and handle resp codes
         return resp
 
     def get_account(self, puuid):
@@ -253,9 +258,9 @@ class RiotApiHandler:
 
     def get_challenger_league(self, queue, region):
         url = "https://" + region + ".api.riotgames.com/lol/league/v4/challengerleagues/by-queue/" + queue
-        req = requests.Request('GET', url, headers={self.api_key_header: self.api_key})
-        self.apply_limiter(region, req)
-        return req
+        req = requests.Request('GET', url, headers={self.api_key_header: self.api_key}).prepare()
+        resp = self.apply_limiter(req, route=region, app=self.app_name, method="get_challenger_league")
+        return json.loads(resp.content)
 
     def get_leagues_by_summoner(self, encryptedSummonerId, region):
         pass
@@ -274,10 +279,11 @@ class RiotApiHandler:
 
     def get_ranked_players(self):
 
-        playerbase = pd.DataFrame()
+        playerbase = PlayerDatabase()
         for q in self.leagues:
             for s in self.servers:
-                self.get_challenger_league(q, s)
+                league = self.get_challenger_league(q, s)
+                playerbase.add(league, s, q)
                 # TODO: debug only
                 break
                 self.get_grandmaster_league(q, s)
@@ -316,7 +322,7 @@ class RiotApiHandler:
         pass
 
     def get_summoner_by_summoner(self, encryptedSummonerId, region):
-        pass
+        return "JOE"
 
     def get_third_party_code(self, encryptedSummonerId, region):
         pass
