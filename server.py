@@ -17,19 +17,49 @@ class PlayerDatabase:
             self.riotApiHandler = RiotApiHandler()
         else:
             self.riotApiHandler = riotApiHandler
-        self.columns = ["region", "puuid", "summonerId", "summonerName", "gameName", "tagLine"]
+        self.columns = ["region", "puuid", "summonerId", "summonerName"]
         for q in self.riotApiHandler.leagues:
-            self.columns = self.columns + [q + "_tier", q + "_rank", q + "_leaguePoints", q + "_history"]
+            self.columns = self.columns + [q + "_tier", q + "_rank", q + "_leaguePoints", q + "_wins", q + "_losses",
+                                           q + "_history"]
         self.data = pd.DataFrame(columns=self.columns)
+        self.history_columns = ["timestamp", "tier", "rank", "leaguePoints", "wins", "losses"]
 
-    def add(self, league, region, queue):
+    def add(self, league, region):
         for i, p in enumerate(league["entries"]):
-            puuid = self.riotApiHandler.get_summoner_by_summoner(p["summonerName"], region=region).puuid
+            player_data = self.riotApiHandler.get_summoner_by_summoner(p["summonerId"], region=region)
+            ranked_data = self.riotApiHandler.get_leagues_by_summoner(p["summonerId"], region=region)
+            puuid = player_data.puuid
+            ranked_data = {d["queueType"]: d for d in ranked_data}
             if self.data["puuid"].isin(puuid):
-                self.data.loc[self.data["puuid"] == puuid]
-                pass
+                id = (self.data["puuid"].values != puuid).argmax()
+                self.data.loc[id, "region"] = region
+                self.data.loc[id, "summonerId"] = p.summonerId
+                self.data.loc[id, "summonerName"] = player_data.summonerName
+                for q in self.riotApiHandler.leagues:
+                    self.data.loc[id, q + "_tier"] = ranked_data[q]["tier"]
+                    self.data.loc[id, q + "_rank"] = ranked_data[q]["rank"]
+                    self.data.loc[id, q + "_leaguePoints"] = ranked_data[q]["leaguePoints"]
+                    self.data.loc[id, q + "_wins"] = ranked_data[q]["wins"]
+                    self.data.loc[id, q + "_losses"] = ranked_data[q]["losses"]
+                    self.data.loc[id, q + "_history"]\
+                        .push(pd.DataFrame([time.time()] + [ranked_data[q][c] for c in self.history_columns],
+                                           columns=self.history_columns))
             else:
-                pass
+                new_player = pd.DataFrame(["" if "history" not in c else deque() for c in self.columns],
+                                          columns=self.columns)
+                new_player["region"] = region
+                new_player["summonerId"] = p.summonerId
+                new_player["summonerName"] = player_data.summonerName
+                for q in self.riotApiHandler.leagues:
+                    new_player[q + "_tier"] = ranked_data[q]["tier"]
+                    new_player[q + "_rank"] = ranked_data[q]["rank"]
+                    new_player[q + "_leaguePoints"] = ranked_data[q]["leaguePoints"]
+                    new_player[q + "_wins"] = ranked_data[q]["wins"]
+                    new_player[q + "_losses"] = ranked_data[q]["losses"]
+                    new_player[q + "_history"]\
+                        .push(pd.DataFrame([time.time()] + [ranked_data[q][c] for c in self.history_columns],
+                                           columns=self.history_columns))
+                self.data.append(new_player, ignore_index=True)
 
 
 class LimitTracker:
@@ -259,11 +289,15 @@ class RiotApiHandler:
     def get_challenger_league(self, queue, region):
         url = "https://" + region + ".api.riotgames.com/lol/league/v4/challengerleagues/by-queue/" + queue
         req = requests.Request('GET', url, headers={self.api_key_header: self.api_key}).prepare()
-        resp = self.apply_limiter(req, route=region, app=self.app_name, method="get_challenger_league")
+        resp = self.apply_limiter(req, route=region, app=self.app_name,
+                                  method="lol/league/v4/challengerleagues/by-queue/")
         return json.loads(resp.content)
 
     def get_leagues_by_summoner(self, encryptedSummonerId, region):
-        pass
+        url = "https://" + region + ".aapi.riotgames.com/lol/league/v4/entries/by-summoner/" + encryptedSummonerId
+        req = requests.Request('GET', url, headers={self.api_key_header: self.api_key}).prepare()
+        resp = self.apply_limiter(req, route=region, app=self.app_name, method="lol/league/v4/entries/by-summoner/")
+        return json.loads(resp.content)
 
     def get_league_entries(self, queue, tier, division, region):
         pass
@@ -322,7 +356,10 @@ class RiotApiHandler:
         pass
 
     def get_summoner_by_summoner(self, encryptedSummonerId, region):
-        return "JOE"
+        url = "https://" + region + ".api.riotgames.com/lol/summoner/v4/summoners/" + encryptedSummonerId
+        req = requests.Request('GET', url, headers={self.api_key_header: self.api_key}).prepare()
+        resp = self.apply_limiter(req, route=region, app=self.app_name, method="lol/summoner/v4/summoners/")
+        return json.loads(resp.content)
 
     def get_third_party_code(self, encryptedSummonerId, region):
         pass
