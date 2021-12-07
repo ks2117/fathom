@@ -3,3 +3,5 @@ __pycache__/
 fathom-venv/
 .idea/
 riot-api-key.txt
+match_example.txt
+match_timeline_example.txt

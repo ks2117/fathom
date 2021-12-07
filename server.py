@@ -61,6 +61,12 @@ class PlayerDatabase:
                                            columns=self.history_columns))
                 self.data.append(new_player, ignore_index=True)
 
+    def save(self):
+        pass
+
+    def load(self, path):
+        pass
+
 
 class LimitTracker:
 
