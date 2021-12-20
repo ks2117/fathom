@@ -12,11 +12,12 @@ dirname = os.path.dirname(__file__)
 
 class PlayerDatabase:
 
-    def __init__(self, riotApiHandler=None):
+    def __init__(self, riotApiHandler=None, save_path=os.path.join(dirname, "playerbase/data.csv")):
         if riotApiHandler is None:
             self.riotApiHandler = RiotApiHandler()
         else:
             self.riotApiHandler = riotApiHandler
+        self.save_path=save_path
         self.columns = ["region", "puuid", "summonerId", "summonerName"]
         for q in self.riotApiHandler.leagues:
             self.columns = self.columns + [q + "_tier", q + "_rank", q + "_leaguePoints", q + "_wins", q + "_losses",
@@ -25,16 +26,20 @@ class PlayerDatabase:
         self.history_columns = ["timestamp", "tier", "rank", "leaguePoints", "wins", "losses"]
 
     def add(self, league, region):
+        print(str.format("[{}] ADDING {} PLAYERS", time.time(), len(league["entries"])))
         for i, p in enumerate(league["entries"]):
             player_data = self.riotApiHandler.get_summoner_by_summoner(p["summonerId"], region=region)
             ranked_data = self.riotApiHandler.get_leagues_by_summoner(p["summonerId"], region=region)
-            puuid = player_data.puuid
+            puuid = player_data["puuid"]
             ranked_data = {d["queueType"]: d for d in ranked_data}
-            if self.data["puuid"].isin(puuid):
-                id = (self.data["puuid"].values != puuid).argmax()
+            if len(self.data.index) > 0:
+                id = (self.data["puuid"].values == puuid).argmax()
+            else:
+                id = -1
+            if id > 0 or id == 0 and self.data.loc[0, puuid] == puuid:
                 self.data.loc[id, "region"] = region
-                self.data.loc[id, "summonerId"] = p.summonerId
-                self.data.loc[id, "summonerName"] = player_data.summonerName
+                self.data.loc[id, "summonerId"] = p["summonerId"]
+                self.data.loc[id, "summonerName"] = player_data["name"]
                 for q in self.riotApiHandler.leagues:
                     self.data.loc[id, q + "_tier"] = ranked_data[q]["tier"]
                     self.data.loc[id, q + "_rank"] = ranked_data[q]["rank"]
@@ -42,30 +47,38 @@ class PlayerDatabase:
                     self.data.loc[id, q + "_wins"] = ranked_data[q]["wins"]
                     self.data.loc[id, q + "_losses"] = ranked_data[q]["losses"]
                     self.data.loc[id, q + "_history"]\
-                        .push(pd.DataFrame([time.time()] + [ranked_data[q][c] for c in self.history_columns],
+                        .append(pd.DataFrame([[time.time()] + [ranked_data[q][c] for c in self.history_columns if "timestamp" not in c]],
                                            columns=self.history_columns))
             else:
-                new_player = pd.DataFrame(["" if "history" not in c else deque() for c in self.columns],
-                                          columns=self.columns)
+                new_player = pd.DataFrame([["" if "history" not in c else pd.DataFrame([], columns=self.history_columns)
+                                            for c in self.columns]], columns=self.columns)
                 new_player["region"] = region
-                new_player["summonerId"] = p.summonerId
-                new_player["summonerName"] = player_data.summonerName
+                new_player["summonerId"] = p["summonerId"]
+                new_player["summonerName"] = player_data["name"]
                 for q in self.riotApiHandler.leagues:
-                    new_player[q + "_tier"] = ranked_data[q]["tier"]
-                    new_player[q + "_rank"] = ranked_data[q]["rank"]
-                    new_player[q + "_leaguePoints"] = ranked_data[q]["leaguePoints"]
-                    new_player[q + "_wins"] = ranked_data[q]["wins"]
-                    new_player[q + "_losses"] = ranked_data[q]["losses"]
-                    new_player[q + "_history"]\
-                        .push(pd.DataFrame([time.time()] + [ranked_data[q][c] for c in self.history_columns],
-                                           columns=self.history_columns))
+                    if q in ranked_data:
+                        new_player.loc[0, q + "_tier"] = ranked_data[q]["tier"]
+                        new_player.loc[0, q + "_rank"] = ranked_data[q]["rank"]
+                        new_player.loc[0, q + "_leaguePoints"] = ranked_data[q]["leaguePoints"]
+                        new_player.loc[0, q + "_wins"] = ranked_data[q]["wins"]
+                        new_player.loc[0, q + "_losses"] = ranked_data[q]["losses"]
+                        new_player.loc[0, q + "_history"].append(pd.DataFrame([[time.time()] + [ranked_data[q][c]\
+                                for c in self.history_columns if "timestamp" not in c]], columns=self.history_columns))
                 self.data.append(new_player, ignore_index=True)
 
-    def save(self):
-        pass
+            print(str.format("[{}] ADDED {}/{} PLAYERS", time.time(), i, len(league["entries"])))
 
-    def load(self, path):
-        pass
+    def save(self, path=None):
+        if path is None:
+            self.data.to_csv(self.save_path)
+        else:
+            self.data.to_csv(path)
+
+    def load(self, path=None):
+        if path is None and os.path.exists(self.save_path):
+            self.data = pd.read_csv(self.save_path)
+        elif path is not None and os.path.exists(path):
+            self.data = pd.read_csv(path)
 
 
 class LimitTracker:
@@ -79,9 +92,9 @@ class LimitTracker:
         for l in self.limits:
             while len(l["timestamps"]) > 0 and l["timestamps"][0] < time.time() - l["limit_period"]:
                 l["timestamps"].popleft()
-            limit = l["limit"] * (1 - self.limits_margin) - 1
+            limit = int(l["limit"] * (1 - self.limits_margin) - 1)
             if limit <= len(l["timestamps"]):
-                wait_time = max(wait_time, l["limit_period"] - (time.time() - l["timestamps"][-limit]))
+                wait_time = max(wait_time, l["limit_period"]) #  - (time.time() - l["timestamps"][-limit])
         return wait_time
 
     def add(self, timestamp):
@@ -146,6 +159,7 @@ class RiotApiHandler:
 
     def apply_limiter(self, request, route=None, app=None, method=None):
         got_response = False
+        print(str.format("[{}]: SENT REQUEST: {}", time.time(), request.url))
         while not got_response:
             ready = False
             while not ready:
@@ -170,9 +184,14 @@ class RiotApiHandler:
 
             resp = self.session.send(request)
             timestamp = time.time()
-            got_response = True
-            app_limits = re.split(",:", resp.headers["X-App-Rate-Limit"])
-            method_limits = re.split(",:", resp.headers["X-Method-Rate-Limit"])
+            print(str.format("[{}]: GOT RESPONSE TO REQUEST: {}, RESP_CODE: {}", time.time(), request.url, resp.status_code))
+            if resp.status_code != 429:
+                # 429 is "exceeded rate limiter", all other responses to be handled outside this function
+                got_response = True
+            app_limits = list(map(int, re.split("[,:]", resp.headers["X-App-Rate-Limit"])))
+            app_limits_counts = list(map(int, re.split("[,:]", resp.headers["X-App-Rate-Limit-Count"])))
+            method_limits = list(map(int, re.split("[,:]", resp.headers["X-Method-Rate-Limit"])))
+            method_limits_counts = list(map(int, re.split("[,:]", resp.headers["X-Method-Rate-Limit-Count"])))
             if self.limits[route] is None:
                 self.limits[route] = \
                     LimitTracker([{"limit_period": l, "limit": self.api_key_limits[l], "timestamps": deque([timestamp])}
@@ -189,7 +208,17 @@ class RiotApiHandler:
             self.limits[route].add(timestamp)
             self.limits[app].add(timestamp)
             self.limits[method].add(timestamp)
-            #TODO: wait for resp and handle resp codes
+            if not got_response:
+                max_wait_time = 1
+                for i, a in enumerate(app_limits):
+                    if i % 2 == 0 and a <= app_limits_counts[i]:
+                        max_wait_time = max(max_wait_time, app_limits[i + 1])
+                for i, m in enumerate(method_limits):
+                    if i % 2 == 0 and m <= method_limits_counts[i]:
+                        max_wait_time = max(max_wait_time, method_limits[i + 1])
+                print(str.format("[{}] APP_LIMITS: {}, APP_LIMIT_COUNTS: {}, METHOD_LIMIT: {}, METHOD_LIMIT_COUNTS: {}",
+                                 time.time(), app_limits, app_limits_counts, method_limits, method_limits_counts))
+                time.sleep(max_wait_time)
         return resp
 
     def get_account(self, puuid):
@@ -300,7 +329,7 @@ class RiotApiHandler:
         return json.loads(resp.content)
 
     def get_leagues_by_summoner(self, encryptedSummonerId, region):
-        url = "https://" + region + ".aapi.riotgames.com/lol/league/v4/entries/by-summoner/" + encryptedSummonerId
+        url = "https://" + region + ".api.riotgames.com/lol/league/v4/entries/by-summoner/" + encryptedSummonerId
         req = requests.Request('GET', url, headers={self.api_key_header: self.api_key}).prepare()
         resp = self.apply_limiter(req, route=region, app=self.app_name, method="lol/league/v4/entries/by-summoner/")
         return json.loads(resp.content)
@@ -320,10 +349,13 @@ class RiotApiHandler:
     def get_ranked_players(self):
 
         playerbase = PlayerDatabase()
+        playerbase.load()
         for q in self.leagues:
             for s in self.servers:
                 league = self.get_challenger_league(q, s)
-                playerbase.add(league, s, q)
+                playerbase.add(league, s)
+                playerbase.save()
+                print(playerbase.data)
                 # TODO: debug only
                 break
                 self.get_grandmaster_league(q, s)
